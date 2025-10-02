@@ -7,6 +7,8 @@ export type PlayerChoice = {
   id: string;
   text: string;
   nextNodeId: string;
+  eval: 'good' | 'ok' | 'wrong';
+  feedback: string;
   reward?: number;
   wordsLearned?: string[];
 };

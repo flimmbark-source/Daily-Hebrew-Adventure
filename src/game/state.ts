@@ -16,6 +16,7 @@ type GameState = {
   wordsLearned: string[];
   scenes: Record<string, Scene>;
   startScene: (sceneId: string) => void;
+  goToNode: (nextNodeId: string, reward?: number, wordsLearned?: string[]) => void;
   reset: () => void;
 };
 
@@ -39,6 +40,30 @@ export const useGameState = create<GameState>((set) => ({
       wordsLearned: [],
     });
   },
+  goToNode: (nextNodeId, reward = 0, newWords = []) =>
+    set((state) => {
+      if (!state.sceneId) {
+        return state;
+      }
+
+      const scene = state.scenes[state.sceneId];
+      if (!scene?.nodes[nextNodeId]) {
+        console.warn(`Node with id "${nextNodeId}" not found in scene "${state.sceneId}".`);
+        return state;
+      }
+
+      const uniqueWords = new Set(state.wordsLearned);
+      for (const word of newWords) {
+        uniqueWords.add(word);
+      }
+
+      return {
+        ...state,
+        nodeId: nextNodeId,
+        points: state.points + reward,
+        wordsLearned: Array.from(uniqueWords),
+      };
+    }),
   reset: () =>
     set({
       sceneId: null,
