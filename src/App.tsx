@@ -1,793 +1,499 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type DragEvent, useEffect, useMemo, useRef, useState } from 'react';
 
-import { FeedbackChip, ReviewTray } from './components';
-import { selectCurrentNode, useGameState } from './game/state';
-import type { GenderPresentation, PlayerChoice, PlayerLevel } from './scenes/types';
+import { beginnerCafeConversation, type ResponseWord } from './game/conversation';
+import type { GenderPresentation, PlayerLevel } from './scenes/types';
 
-const CAFE_SCENE_ID = 'cafe';
+type GamePhase = 'profile' | 'intro' | 'play' | 'summary';
 
-const GENDER_OPTIONS: { value: GenderPresentation; label: string; description: string }[] = [
-  {
-    value: 'masculine',
-    label: 'Masculine',
-    description: 'Use masculine verb endings in your replies.',
-  },
-  {
-    value: 'feminine',
-    label: 'Feminine',
-    description: 'Use feminine verb endings in your replies.',
-  },
-  {
-    value: 'neutral',
-    label: 'Neutral',
-    description: 'Prefer mixed or gender-neutral phrasing.',
-  },
+type PlayerProfile = {
+  name: string;
+  gender: GenderPresentation;
+  level: PlayerLevel;
+};
+
+type DragItem = {
+  source: 'bank' | 'slot';
+  wordId: string;
+  slotIndex?: number;
+};
+
+const genderOptions: { value: GenderPresentation; label: string }[] = [
+  { value: 'masculine', label: 'Masculine' },
+  { value: 'feminine', label: 'Feminine' },
+  { value: 'neutral', label: 'Neutral' },
 ];
 
-const LEVEL_OPTIONS: { value: PlayerLevel; label: string; description: string }[] = [
-  {
-    value: 'beginner',
-    label: 'Beginner',
-    description: 'Show transliteration hints by default.',
-  },
-  {
-    value: 'advanced',
-    label: 'Advanced',
-    description: 'Hide hints unless a concept trips you up.',
-  },
+const levelOptions: { value: PlayerLevel; label: string }[] = [
+  { value: 'beginner', label: 'Beginner' },
+  { value: 'advanced', label: 'Advanced' },
 ];
 
-type ChoiceFeedback = Record<
-  string,
-  {
-    evaluation: PlayerChoice['eval'];
-    message: string;
-  }
->;
-
-type ConfidenceLevel = 'notSure' | 'kindaSure' | 'verySure';
-
-type PendingConfidence = {
-  choice: PlayerChoice;
-  isMicroReview: boolean;
-  contextNodeId: string;
-};
-
-type MicroReviewData = {
-  id: string;
-  nodeId: string;
-  speaker: string;
-  text: string;
-  choices: PlayerChoice[];
-};
-
-type VocabItemSchedule = {
-  itemId: string;
-  label: string;
-  ease: number;
-  interval: number;
-  repetitions: number;
-  nextDue: number;
-  lastReviewed: number | null;
-  reviewCount: number;
-  totalQuality: number;
-};
-
-type ReviewCandidate = {
-  itemId: string;
-  label: string;
-  ease: number;
-  nextDue: number;
-  isDue: boolean;
-  averageQuality: number | null;
-  rating?: number;
-};
-
-const DAY_IN_MS = 24 * 60 * 60 * 1000;
-const SM2_MIN_EASE = 1.3;
-
-const ConfidenceButtons = ({ onSelect }: { onSelect: (level: ConfidenceLevel) => void }) => (
-  <div className="flex w-full justify-between gap-2">
-    <button
-      type="button"
-      onClick={() => onSelect('notSure')}
-      className="flex-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 shadow-sm transition hover:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:ring-offset-2"
-    >
-      Not sure
-    </button>
-    <button
-      type="button"
-      onClick={() => onSelect('kindaSure')}
-      className="flex-1 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-sm font-semibold text-sky-800 shadow-sm transition hover:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400 focus:ring-offset-2"
-    >
-      Kinda sure
-    </button>
-    <button
-      type="button"
-      onClick={() => onSelect('verySure')}
-      className="flex-1 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 shadow-sm transition hover:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2"
-    >
-      Very sure
-    </button>
-  </div>
-);
-
-function App() {
-  const sceneId = useGameState((state) => state.sceneId);
-  const startScene = useGameState((state) => state.startScene);
-  const currentNode = useGameState(selectCurrentNode);
-  const goToNode = useGameState((state) => state.goToNode);
-  const reset = useGameState((state) => state.reset);
-  const profile = useGameState((state) => state.profile);
-  const updateProfile = useGameState((state) => state.updateProfile);
-
-  const hasStarted = Boolean(sceneId);
-  const [feedbackByChoice, setFeedbackByChoice] = useState<ChoiceFeedback>({});
-  const [microReviewFeedback, setMicroReviewFeedback] = useState<ChoiceFeedback>({});
-  const advanceTimeoutRef = useRef<number | null>(null);
-  const [pendingConfidence, setPendingConfidence] = useState<PendingConfidence | null>(null);
-  const [pendingMicroReview, setPendingMicroReview] = useState<MicroReviewData | null>(null);
-  const [activeMicroReview, setActiveMicroReview] = useState<MicroReviewData | null>(null);
-  const [postMicroReviewChoice, setPostMicroReviewChoice] = useState<PlayerChoice | null>(null);
-  const [vocabSchedule, setVocabSchedule] = useState<Record<string, VocabItemSchedule>>({});
-  const [reviewRatings, setReviewRatings] = useState<Record<string, number>>({});
-  const [missedConcepts, setMissedConcepts] = useState<Record<string, boolean>>({});
-
-  const resolveChoiceForProfile = useCallback(
-    (choice: PlayerChoice): PlayerChoice => {
-      const variant =
-        choice.variants?.[profile.genderPresentation] ?? choice.variants?.neutral;
-
-      if (!variant) {
-        return choice;
-      }
-
-      return {
-        ...choice,
-        text: variant.text ?? choice.text,
-        transliteration: variant.transliteration ?? choice.transliteration,
-        eval: variant.eval ?? choice.eval,
-        feedback: variant.feedback ?? choice.feedback,
-      };
-    },
-    [profile.genderPresentation],
-  );
-
-  const handleGenderChange = useCallback(
-    (value: GenderPresentation) => {
-      if (value === profile.genderPresentation) {
-        return;
-      }
-
-      updateProfile({ genderPresentation: value });
-    },
-    [profile.genderPresentation, updateProfile],
-  );
-
-  const handleLevelChange = useCallback(
-    (value: PlayerLevel) => {
-      if (value === profile.level) {
-        return;
-      }
-
-      updateProfile({ level: value });
-    },
-    [profile.level, updateProfile],
-  );
-
-  const shouldShowTransliteration = useCallback(
-    (choice: PlayerChoice) => {
-      if (!choice.transliteration) {
-        return false;
-      }
-
-      if (profile.level === 'beginner') {
-        return true;
-      }
-
-      if (!choice.conceptId) {
-        return false;
-      }
-
-      return Boolean(missedConcepts[choice.conceptId]);
-    },
-    [missedConcepts, profile.level],
-  );
-
-  const applySchedulingUpdates = useCallback(
-    (updates: { itemId: string; label: string; quality: number }[]) => {
-      if (updates.length === 0) {
-        return;
-      }
-
-      const timestamp = Date.now();
-
-      setVocabSchedule((previous) => {
-        const next = { ...previous };
-
-        for (const update of updates) {
-          const quality = Math.max(0, Math.min(5, update.quality));
-          const existing = next[update.itemId] ?? {
-            itemId: update.itemId,
-            label: update.label,
-            ease: 2.5,
-            interval: 0,
-            repetitions: 0,
-            nextDue: timestamp,
-            lastReviewed: null,
-            reviewCount: 0,
-            totalQuality: 0,
-          };
-
-          let ease = existing.ease - 0.8 + 0.28 * quality - 0.02 * quality * quality;
-          ease = Number.isFinite(ease) ? Math.max(SM2_MIN_EASE, ease) : existing.ease;
-
-          let repetitions = existing.repetitions;
-          let interval = existing.interval;
-
-          if (quality < 3) {
-            repetitions = 0;
-            interval = 1;
-          } else {
-            repetitions += 1;
-
-            if (repetitions === 1) {
-              interval = 1;
-            } else if (repetitions === 2) {
-              interval = 6;
-            } else {
-              interval = Math.max(1, Math.round(existing.interval * ease));
-            }
-          }
-
-          next[update.itemId] = {
-            ...existing,
-            label: update.label ?? existing.label,
-            ease,
-            repetitions,
-            interval,
-            nextDue: timestamp + interval * DAY_IN_MS,
-            lastReviewed: timestamp,
-            reviewCount: existing.reviewCount + 1,
-            totalQuality: existing.totalQuality + quality,
-          };
-        }
-
-        return next;
-      });
-    },
-    [],
-  );
-
-  const clearAdvanceTimeout = useCallback(() => {
-    if (typeof window === 'undefined') {
-      advanceTimeoutRef.current = null;
-      return;
-    }
-
-    if (advanceTimeoutRef.current !== null) {
-      window.clearTimeout(advanceTimeoutRef.current);
-      advanceTimeoutRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => () => clearAdvanceTimeout(), [clearAdvanceTimeout]);
-
-  const speak = useCallback((text: string) => {
-    if (!text || typeof window === 'undefined') {
-      return;
-    }
-
-    const synth = window.speechSynthesis;
-    if (!synth) {
-      return;
-    }
-
-    synth.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'he-IL';
-    synth.speak(utterance);
-  }, []);
-
-  useEffect(() => {
-    if (currentNode?.npc.text && !activeMicroReview) {
-      speak(currentNode.npc.text);
-    }
-
-    setFeedbackByChoice({});
-    setPendingConfidence(null);
-    clearAdvanceTimeout();
-  }, [currentNode?.id, currentNode?.npc.text, activeMicroReview, clearAdvanceTimeout, speak]);
-
-  useEffect(() => {
-    if (!activeMicroReview) {
-      return;
-    }
-
-    setMicroReviewFeedback({});
-    setPendingConfidence(null);
-    if (activeMicroReview.text) {
-      speak(activeMicroReview.text);
-    }
-    clearAdvanceTimeout();
-  }, [activeMicroReview, clearAdvanceTimeout, speak]);
-
-  const scheduleAdvance = useCallback(
-    (choice: PlayerChoice) => {
-      const proceed = () => {
-        goToNode(choice.nextNodeId, choice.reward ?? 0, choice.wordsLearned ?? []);
-      };
-
-      if (typeof window === 'undefined') {
-        proceed();
-        return;
-      }
-
-      clearAdvanceTimeout();
-      const delay = 800 + Math.random() * 400;
-      const timeoutId = window.setTimeout(() => {
-        proceed();
-        advanceTimeoutRef.current = null;
-      }, delay);
-      advanceTimeoutRef.current = timeoutId;
-    },
-    [clearAdvanceTimeout, goToNode],
-  );
-
-  const handleChoiceClick = useCallback(
-    (choice: PlayerChoice) => {
-      if (pendingConfidence) {
-        return;
-      }
-
-      const isMicroReview = Boolean(activeMicroReview);
-
-      if (isMicroReview) {
-        setMicroReviewFeedback((prev) => ({
-          ...prev,
-          [choice.id]: { evaluation: choice.eval, message: choice.feedback },
-        }));
-      } else {
-        setFeedbackByChoice((prev) => ({
-          ...prev,
-          [choice.id]: { evaluation: choice.eval, message: choice.feedback },
-        }));
-      }
-
-      if (choice.conceptId && choice.eval === 'wrong') {
-        setMissedConcepts((prev) => ({
-          ...prev,
-          [choice.conceptId ?? '']: true,
-        }));
-      }
-
-      if (choice.eval === 'good') {
-        speak(choice.text);
-      }
-
-      const nodeId = isMicroReview
-        ? activeMicroReview?.nodeId ?? currentNode?.id ?? ''
-        : currentNode?.id ?? '';
-
-      if (!nodeId) {
-        return;
-      }
-
-      setPendingConfidence({ choice, isMicroReview, contextNodeId: nodeId });
-    },
-    [activeMicroReview, currentNode?.id, pendingConfidence, speak],
-  );
-
-  const computeQuality = useCallback((evaluation: PlayerChoice['eval'], confidence: ConfidenceLevel) => {
-    const isCorrect = evaluation === 'good' || evaluation === 'ok';
-
-    if (confidence === 'verySure') {
-      return isCorrect ? 5 : 0;
-    }
-
-    if (confidence === 'kindaSure') {
-      return isCorrect ? 4 : 1;
-    }
-
-    return isCorrect ? 3 : 1;
-  }, []);
-
-  const maybeScheduleMicroReview = useCallback(
-    (nodeId: string) => {
-      if (pendingMicroReview || activeMicroReview || !currentNode || currentNode.id !== nodeId) {
-        return;
-      }
-
-      setPendingMicroReview({
-        id: `micro-${nodeId}-${Date.now()}`,
-        nodeId,
-        speaker: currentNode.npc.speaker,
-        text: currentNode.npc.text,
-        choices: currentNode.playerChoices,
-      });
-    },
-    [activeMicroReview, currentNode, pendingMicroReview],
-  );
-
-  const handleConfidenceSelect = useCallback(
-    (level: ConfidenceLevel) => {
-      if (!pendingConfidence) {
-        return;
-      }
-
-      const { choice, isMicroReview, contextNodeId } = pendingConfidence;
-      setPendingConfidence(null);
-
-      const quality = computeQuality(choice.eval, level);
-
-      const isCorrect = choice.eval === 'good' || choice.eval === 'ok';
-      if (isCorrect && choice.wordsLearned && choice.wordsLearned.length > 0) {
-        const schedulingUpdates = choice.wordsLearned.map((word) => ({
-          itemId: word,
-          label: word,
-          quality,
-        }));
-
-        applySchedulingUpdates(schedulingUpdates);
-
-        setReviewRatings((prev) => {
-          const next = { ...prev };
-          for (const word of choice.wordsLearned ?? []) {
-            delete next[word];
-          }
-          return next;
-        });
-      }
-
-      if (isMicroReview) {
-        if (!activeMicroReview) {
-          return;
-        }
-
-        if (choice.eval === 'wrong') {
-          return;
-        }
-
-        setActiveMicroReview(null);
-        const nextChoice = postMicroReviewChoice;
-        setPostMicroReviewChoice(null);
-        if (nextChoice) {
-          scheduleAdvance(nextChoice);
-        }
-        return;
-      }
-
-      if (choice.eval === 'wrong') {
-        maybeScheduleMicroReview(contextNodeId);
-        return;
-      }
-
-      if (pendingMicroReview) {
-        setActiveMicroReview(pendingMicroReview);
-        setPendingMicroReview(null);
-        setPostMicroReviewChoice(choice);
-        return;
-      }
-
-      scheduleAdvance(choice);
-    },
-    [
-      activeMicroReview,
-      applySchedulingUpdates,
-      computeQuality,
-      maybeScheduleMicroReview,
-      pendingConfidence,
-      pendingMicroReview,
-      postMicroReviewChoice,
-      scheduleAdvance,
-    ],
-  );
-
-  const handleStartScene = useCallback(() => {
-    setFeedbackByChoice({});
-    setMicroReviewFeedback({});
-    setPendingConfidence(null);
-    setPendingMicroReview(null);
-    setActiveMicroReview(null);
-    setPostMicroReviewChoice(null);
-    setReviewRatings({});
-    setMissedConcepts({});
-    startScene(CAFE_SCENE_ID);
-  }, [startScene]);
-
-  const handleReset = useCallback(() => {
-    clearAdvanceTimeout();
-    setFeedbackByChoice({});
-    setMicroReviewFeedback({});
-    setPendingConfidence(null);
-    setPendingMicroReview(null);
-    setActiveMicroReview(null);
-    setPostMicroReviewChoice(null);
-    setReviewRatings({});
-    setMissedConcepts({});
-    reset();
-  }, [clearAdvanceTimeout, reset]);
-
-  const reviewTrayItems: ReviewCandidate[] = useMemo(() => {
-    const entries = Object.values(vocabSchedule);
-    if (entries.length === 0) {
-      return [];
-    }
-
-    const now = Date.now();
-
-    const sorted = [...entries].sort((a, b) => {
-      const aDue = a.nextDue <= now;
-      const bDue = b.nextDue <= now;
-
-      if (aDue && !bDue) {
-        return -1;
-      }
-
-      if (!aDue && bDue) {
-        return 1;
-      }
-
-      if (aDue && bDue) {
-        return a.nextDue - b.nextDue;
-      }
-
-      const aAverage = a.reviewCount > 0 ? a.totalQuality / a.reviewCount : Number.POSITIVE_INFINITY;
-      const bAverage = b.reviewCount > 0 ? b.totalQuality / b.reviewCount : Number.POSITIVE_INFINITY;
-
-      if (aAverage !== bAverage) {
-        return aAverage - bAverage;
-      }
-
-      if (a.ease !== b.ease) {
-        return a.ease - b.ease;
-      }
-
-      return a.nextDue - b.nextDue;
-    });
-
-    return sorted.slice(0, 3).map((item) => ({
-      itemId: item.itemId,
-      label: item.label,
-      ease: item.ease,
-      nextDue: item.nextDue,
-      isDue: item.nextDue <= now,
-      averageQuality: item.reviewCount > 0 ? item.totalQuality / item.reviewCount : null,
-      rating: reviewRatings[item.itemId],
-    }));
-  }, [reviewRatings, vocabSchedule]);
-
-  const handleReviewRate = useCallback(
-    (itemId: string, quality: number) => {
-      const scheduleEntry = vocabSchedule[itemId];
-      if (!scheduleEntry) {
-        return;
-      }
-
-      applySchedulingUpdates([{ itemId, label: scheduleEntry.label, quality }]);
-
-      setReviewRatings((prev) => ({
-        ...prev,
-        [itemId]: Math.max(0, Math.min(5, quality)),
-      }));
-    },
-    [applySchedulingUpdates, vocabSchedule],
-  );
-
+function WordToken({
+  word,
+  onDragStart,
+  className = '',
+}: {
+  word: ResponseWord;
+  onDragStart: (event: DragEvent<HTMLDivElement>) => void;
+  className?: string;
+}) {
   return (
-    <div className="mx-auto flex min-h-screen max-w-2xl flex-col items-center bg-gradient-to-b from-emerald-50 via-white to-emerald-100 px-6 py-16 text-slate-900">
-      <header className="w-full text-center">
-        <h1 className="text-4xl font-bold tracking-tight text-emerald-700">
-          Daily Hebrew Adventure
-        </h1>
-        <p className="mt-3 text-lg text-slate-600">
-          Step into everyday conversations and grow your Hebrew vocabulary.
-        </p>
-      </header>
-
-      <main className="mt-12 w-full flex-1">
-        <section className="mb-8 rounded-2xl bg-white/80 p-6 shadow-lg">
-          <h2 className="text-lg font-semibold text-emerald-700">Player profile</h2>
-          <p className="mt-1 text-sm text-slate-600">
-            Tune the conversation so your responses and hints match your goals.
-          </p>
-          <div className="mt-5 grid gap-4 md:grid-cols-2">
-            <div className="space-y-3">
-              <h3 className="text-sm font-semibold uppercase tracking-wide text-emerald-500">
-                Gender presentation
-              </h3>
-              <div className="flex flex-col gap-3">
-                {GENDER_OPTIONS.map((option) => {
-                  const isActive = profile.genderPresentation === option.value;
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      onClick={() => handleGenderChange(option.value)}
-                      aria-pressed={isActive}
-                      className={`rounded-xl border px-4 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 ${
-                        isActive
-                          ? 'border-emerald-500 bg-emerald-50 text-emerald-800 shadow'
-                          : 'border-slate-200 bg-white/70 text-slate-700 hover:border-emerald-300'
-                      }`}
-                    >
-                      <span className="font-semibold">{option.label}</span>
-                      <span className="mt-1 block text-sm text-slate-500">{option.description}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-            <div className="space-y-3">
-              <h3 className="text-sm font-semibold uppercase tracking-wide text-emerald-500">Learning mode</h3>
-              <div className="flex flex-col gap-3">
-                {LEVEL_OPTIONS.map((option) => {
-                  const isActive = profile.level === option.value;
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      onClick={() => handleLevelChange(option.value)}
-                      aria-pressed={isActive}
-                      className={`rounded-xl border px-4 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 ${
-                        isActive
-                          ? 'border-emerald-500 bg-emerald-50 text-emerald-800 shadow'
-                          : 'border-slate-200 bg-white/70 text-slate-700 hover:border-emerald-300'
-                      }`}
-                    >
-                      <span className="font-semibold">{option.label}</span>
-                      <span className="mt-1 block text-sm text-slate-500">{option.description}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {!hasStarted && (
-          <div className="flex flex-col items-center gap-6">
-            <p className="text-center text-lg text-slate-600">
-              Begin your journey with a warm welcome at the neighborhood café.
-            </p>
-            <button
-              type="button"
-              onClick={handleStartScene}
-              className="rounded-full bg-emerald-600 px-6 py-3 text-lg font-semibold text-white shadow-lg transition hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2"
-            >
-              Start Scene
-            </button>
-          </div>
-        )}
-
-        {hasStarted && (activeMicroReview || currentNode) && (
-          <section className="rounded-2xl bg-white p-8 shadow-xl">
-            <div className="flex flex-col gap-8">
-              {activeMicroReview ? (
-                <>
-                  <div>
-                    <p className="text-sm font-semibold uppercase tracking-wide text-emerald-500">Quick review</p>
-                    <h2 className="mt-2 text-xl font-semibold text-emerald-700">{activeMicroReview.speaker}</h2>
-                    <p className="mt-4 text-lg leading-relaxed text-slate-700" dir="rtl" lang="he">
-                      {activeMicroReview.text}
-                    </p>
-                  </div>
-
-                    <ul className="flex flex-col gap-4">
-                      {activeMicroReview.choices.map((choice) => {
-                        const resolvedChoice = resolveChoiceForProfile(choice);
-                        const feedback = microReviewFeedback[resolvedChoice.id];
-                        const awaitingConfidence = pendingConfidence?.choice.id === resolvedChoice.id;
-                        const showTransliteration = shouldShowTransliteration(resolvedChoice);
-                        return (
-                          <li key={resolvedChoice.id} className="flex w-full flex-col items-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleChoiceClick(resolvedChoice)}
-                              className="w-full rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-3 text-right text-lg font-semibold text-emerald-800 shadow-sm transition hover:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
-                              dir="rtl"
-                              lang="he"
-                              disabled={Boolean(pendingConfidence) && !awaitingConfidence}
-                            >
-                              {resolvedChoice.text}
-                            </button>
-                            {showTransliteration && resolvedChoice.transliteration && (
-                              <span className="self-end text-sm font-medium text-slate-500" dir="ltr" lang="en">
-                                {resolvedChoice.transliteration}
-                              </span>
-                            )}
-                            {feedback && (
-                              <FeedbackChip evaluation={feedback.evaluation} message={feedback.message} />
-                            )}
-                            {awaitingConfidence && (
-                              <div className="w-full text-left">
-                                <p className="mb-2 text-sm font-medium text-slate-600">How confident did you feel?</p>
-                                <ConfidenceButtons onSelect={handleConfidenceSelect} />
-                              </div>
-                            )}
-                          </li>
-                        );
-                      })}
-                    </ul>
-                </>
-              ) : (
-                currentNode && (
-                  <>
-                    <div>
-                      <h2 className="text-xl font-semibold text-emerald-700">{currentNode.npc.speaker}</h2>
-                      <p className="mt-4 text-lg leading-relaxed text-slate-700" dir="rtl" lang="he">
-                        {currentNode.npc.text}
-                      </p>
-                    </div>
-
-                      {currentNode.playerChoices.length > 0 ? (
-                        <ul className="flex flex-col gap-4">
-                          {currentNode.playerChoices.map((choice) => {
-                            const resolvedChoice = resolveChoiceForProfile(choice);
-                            const feedback = feedbackByChoice[resolvedChoice.id];
-                            const awaitingConfidence = pendingConfidence?.choice.id === resolvedChoice.id;
-                            const showTransliteration = shouldShowTransliteration(resolvedChoice);
-                            return (
-                              <li key={resolvedChoice.id} className="flex flex-col items-end gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => handleChoiceClick(resolvedChoice)}
-                                  className="w-full rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-3 text-right text-lg font-semibold text-emerald-800 shadow-sm transition hover:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
-                                  dir="rtl"
-                                  lang="he"
-                                  disabled={Boolean(pendingConfidence) && !awaitingConfidence}
-                                >
-                                  {resolvedChoice.text}
-                                </button>
-                                {showTransliteration && resolvedChoice.transliteration && (
-                                  <span className="self-end text-sm font-medium text-slate-500" dir="ltr" lang="en">
-                                    {resolvedChoice.transliteration}
-                                  </span>
-                                )}
-                                {feedback && (
-                                  <FeedbackChip evaluation={feedback.evaluation} message={feedback.message} />
-                                )}
-                                {awaitingConfidence && (
-                                  <div className="w-full text-left">
-                                    <p className="mb-2 text-sm font-medium text-slate-600">How confident did you feel?</p>
-                                    <ConfidenceButtons onSelect={handleConfidenceSelect} />
-                                  </div>
-                                )}
-                              </li>
-                            );
-                          })}
-                        </ul>
-                    ) : (
-                      <div className="flex flex-col items-center gap-6 rounded-xl bg-emerald-50 p-6 text-center">
-                        <p className="text-lg font-semibold text-emerald-700" dir="rtl" lang="he">
-                          כל הכבוד! סיימת את השיחה.
-                        </p>
-                        <div className="w-full rounded-xl bg-white/70 p-4 text-left">
-                          <h3 className="text-base font-semibold text-emerald-700">Review tray</h3>
-                          {reviewTrayItems.length > 0 ? (
-                            <ReviewTray items={reviewTrayItems} onRate={handleReviewRate} />
-                          ) : (
-                            <p className="mt-3 text-sm text-slate-600">No review items yet—keep exploring!</p>
-                          )}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={handleReset}
-                          className="rounded-full bg-emerald-600 px-5 py-2 text-base font-semibold text-white shadow transition hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2"
-                        >
-                          התחל מחדש
-                        </button>
-                      </div>
-                    )}
-                  </>
-                )
-              )}
-            </div>
-          </section>
-        )}
-      </main>
+    <div
+      draggable
+      onDragStart={onDragStart}
+      className={`cursor-grab select-none rounded-xl border border-slate-300 bg-white px-3 py-2 text-lg font-semibold text-slate-900 shadow transition hover:border-emerald-400 hover:shadow-lg dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 ${className}`}
+      title={word.translation}
+    >
+      {word.text}
     </div>
   );
 }
 
-export default App;
+export default function App() {
+  const conversation = beginnerCafeConversation;
+
+  const [phase, setPhase] = useState<GamePhase>('profile');
+  const [profile, setProfile] = useState<PlayerProfile>({
+    name: '',
+    gender: 'neutral',
+    level: 'beginner',
+  });
+
+  const [currentStepIndex, setCurrentStepIndex] = useState(0);
+  const [slots, setSlots] = useState<(string | null)[]>([]);
+  const [feedback, setFeedback] = useState<(boolean | null)[]>([]);
+  const [stepSolved, setStepSolved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [stats, setStats] = useState({
+    attempts: 0,
+    stepsCompleted: 0,
+    wordsCorrect: 0,
+  });
+
+  const uniqueWordsRef = useRef(new Set<string>());
+  const [uniqueWordCount, setUniqueWordCount] = useState(0);
+
+  const currentStep = conversation.steps[currentStepIndex];
+
+  useEffect(() => {
+    if (!currentStep) {
+      return;
+    }
+
+    setSlots(Array(currentStep.responseWordIds.length).fill(null));
+    setFeedback(Array(currentStep.responseWordIds.length).fill(null));
+    setStepSolved(false);
+    setError(null);
+  }, [currentStep]);
+
+  const wordLookup = useMemo(() => {
+    const map = new Map<string, ResponseWord>();
+    if (!currentStep) {
+      return map;
+    }
+
+    currentStep.wordBank.forEach((word) => {
+      map.set(word.id, word);
+    });
+
+    return map;
+  }, [currentStep]);
+
+  const placedIds = useMemo(() => slots.filter((id): id is string => Boolean(id)), [slots]);
+
+  const availableWords = useMemo(() => {
+    if (!currentStep) {
+      return [];
+    }
+
+    const placed = new Set(placedIds);
+
+    return currentStep.wordBank.filter((word) => !placed.has(word.id));
+  }, [currentStep, placedIds]);
+
+  const handleProfileChange = <K extends keyof PlayerProfile>(
+    field: K,
+    value: PlayerProfile[K],
+  ) => {
+    setProfile((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleStartGame = () => {
+    setPhase('intro');
+  };
+
+  const handleEnterScene = () => {
+    setPhase('play');
+  };
+
+  const parseDragItem = (event: DragEvent): DragItem | null => {
+    try {
+      const payload = event.dataTransfer.getData('application/json');
+      return payload ? (JSON.parse(payload) as DragItem) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const resetFeedback = () => {
+    if (!currentStep) {
+      return;
+    }
+
+    setFeedback(Array(currentStep.responseWordIds.length).fill(null));
+    setError(null);
+    setStepSolved(false);
+  };
+
+  const handleDropOnSlot = (slotIndex: number, event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const dragItem = parseDragItem(event);
+    if (!dragItem) {
+      return;
+    }
+
+    resetFeedback();
+
+    setSlots((prev) => {
+      const next = [...prev];
+
+      if (dragItem.source === 'slot' && dragItem.slotIndex === slotIndex) {
+        return prev;
+      }
+
+      const displaced = next[slotIndex];
+
+      if (dragItem.source === 'slot' && typeof dragItem.slotIndex === 'number') {
+        next[dragItem.slotIndex] = displaced ?? null;
+      }
+
+      next[slotIndex] = dragItem.wordId;
+
+      return next;
+    });
+  };
+
+  const handleDropToBank = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const dragItem = parseDragItem(event);
+    if (!dragItem) {
+      return;
+    }
+
+    if (dragItem.source === 'slot' && typeof dragItem.slotIndex === 'number') {
+      resetFeedback();
+      setSlots((prev) => {
+        const next = [...prev];
+        next[dragItem.slotIndex!] = null;
+        return next;
+      });
+    }
+  };
+
+  const handleDragStartFromBank = (wordId: string) => (event: DragEvent<HTMLDivElement>) => {
+    const payload: DragItem = { source: 'bank', wordId };
+    event.dataTransfer.setData('application/json', JSON.stringify(payload));
+    event.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragStartFromSlot = (wordId: string, slotIndex: number) =>
+    (event: DragEvent<HTMLDivElement>) => {
+      const payload: DragItem = { source: 'slot', wordId, slotIndex };
+      event.dataTransfer.setData('application/json', JSON.stringify(payload));
+      event.dataTransfer.effectAllowed = 'move';
+    };
+
+  const handleSubmit = () => {
+    if (!currentStep) {
+      return;
+    }
+
+    if (slots.some((slot) => slot === null)) {
+      setError('Fill every response space before submitting.');
+      return;
+    }
+
+    const evaluation = currentStep.responseWordIds.map((expected, index) => {
+      return slots[index] === expected;
+    });
+
+    setFeedback(evaluation);
+    setError(null);
+
+    const allCorrect = evaluation.every(Boolean);
+
+    setStats((prev) => {
+      const updated = {
+        attempts: prev.attempts + 1,
+        stepsCompleted: prev.stepsCompleted,
+        wordsCorrect: prev.wordsCorrect,
+      };
+
+      if (allCorrect && !stepSolved) {
+        updated.stepsCompleted += 1;
+        updated.wordsCorrect += currentStep.responseWordIds.length;
+      }
+
+      return updated;
+    });
+
+    if (allCorrect && !stepSolved) {
+      setStepSolved(true);
+
+      const nextWordSet = new Set(uniqueWordsRef.current);
+      currentStep.responseWordIds.forEach((id) => nextWordSet.add(id));
+      uniqueWordsRef.current = nextWordSet;
+      setUniqueWordCount(nextWordSet.size);
+    }
+  };
+
+  const handleNextStep = () => {
+    if (currentStepIndex < conversation.steps.length - 1) {
+      setCurrentStepIndex((prev) => prev + 1);
+    } else {
+      setPhase('summary');
+    }
+  };
+
+  const renderProfilePhase = () => (
+    <div className="mx-auto w-full max-w-xl rounded-3xl bg-white/90 p-8 shadow-xl backdrop-blur-lg">
+      <h1 className="text-3xl font-extrabold text-slate-900">Daily Hebrew Adventure</h1>
+      <p className="mt-2 text-slate-600">
+        Set up your player profile to begin your first guided conversation.
+      </p>
+
+      <div className="mt-8 space-y-6">
+        <label className="block">
+          <span className="text-sm font-semibold uppercase tracking-wide text-slate-600">Player name</span>
+          <input
+            type="text"
+            value={profile.name}
+            onChange={(event) => handleProfileChange('name', event.target.value)}
+            placeholder="Type your name"
+            className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-lg text-slate-900 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-300"
+          />
+        </label>
+
+        <label className="block">
+          <span className="text-sm font-semibold uppercase tracking-wide text-slate-600">Pronoun style</span>
+          <select
+            value={profile.gender}
+            onChange={(event) =>
+              handleProfileChange('gender', event.target.value as GenderPresentation)
+            }
+            className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-lg text-slate-900 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-300"
+          >
+            {genderOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="block">
+          <span className="text-sm font-semibold uppercase tracking-wide text-slate-600">Experience level</span>
+          <select
+            value={profile.level}
+            onChange={(event) =>
+              handleProfileChange('level', event.target.value as PlayerLevel)
+            }
+            className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-lg text-slate-900 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-300"
+          >
+            {levelOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <button
+          type="button"
+          onClick={handleStartGame}
+          className="w-full rounded-xl bg-emerald-500 px-4 py-3 text-lg font-semibold text-white shadow-lg transition hover:bg-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-2"
+        >
+          Begin adventure
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderIntroPhase = () => (
+    <div className="mx-auto w-full max-w-3xl rounded-3xl bg-white/90 p-10 text-center shadow-xl backdrop-blur-lg">
+      <p className="text-sm uppercase tracking-[0.3em] text-slate-500">{conversation.location}</p>
+      <h2 className="mt-3 text-4xl font-black text-slate-900">{conversation.title}</h2>
+      <p className="mt-6 text-lg leading-relaxed text-slate-700">{conversation.intro}</p>
+      <button
+        type="button"
+        onClick={handleEnterScene}
+        className="mt-8 inline-flex items-center justify-center rounded-xl bg-emerald-500 px-6 py-3 text-lg font-semibold text-white shadow-lg transition hover:bg-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-2"
+      >
+        Enter the scene
+      </button>
+    </div>
+  );
+
+  const renderPlayPhase = () => (
+    <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 rounded-3xl bg-white/90 p-10 shadow-xl backdrop-blur-lg">
+      <div>
+        <p className="text-sm uppercase tracking-[0.3em] text-slate-500">Scene</p>
+        <h2 className="text-3xl font-black text-slate-900">{conversation.title}</h2>
+        <p className="mt-2 text-slate-600">{currentStep.narration}</p>
+        <p className="mt-2 text-sm font-semibold text-emerald-600">
+          Sentence {currentStepIndex + 1} of {conversation.steps.length}
+        </p>
+      </div>
+
+      <section className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-6 dark:border-slate-700 dark:bg-slate-900/70">
+        <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">Hebrew prompt</p>
+        <div className="flex flex-wrap gap-3 text-2xl font-bold text-slate-900">
+          {currentStep.prompt.map((word) => (
+            <span
+              key={word.id}
+              className="rounded-lg bg-white px-4 py-2 shadow-sm dark:bg-slate-800"
+              title={word.translation}
+            >
+              {word.text}
+            </span>
+          ))}
+        </div>
+      </section>
+
+      <section className="space-y-4">
+        <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">Build your reply</p>
+        <div className="flex flex-wrap gap-4">
+          {slots.map((wordId, index) => {
+            const word = wordId ? wordLookup.get(wordId) : null;
+            const state = feedback[index];
+
+            return (
+              <div
+                key={`slot-${index}`}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => handleDropOnSlot(index, event)}
+                className={`relative flex min-h-[64px] min-w-[140px] items-center justify-center rounded-2xl border-2 border-dashed border-emerald-200 bg-white/70 px-4 py-3 text-xl font-semibold text-slate-900 transition hover:border-emerald-400 ${
+                  state === true
+                    ? 'border-solid border-emerald-400 bg-emerald-50'
+                    : state === false
+                      ? 'border-solid border-rose-400 bg-rose-50'
+                      : ''
+                }`}
+              >
+                {word ? (
+                  <div
+                    className="flex items-center gap-2"
+                    draggable
+                    onDragStart={handleDragStartFromSlot(word.id, index)}
+                    title={word.translation}
+                  >
+                    <span>{word.text}</span>
+                    {state !== null && (
+                      <span className="text-lg">{state ? '✅' : '❌'}</span>
+                    )}
+                  </div>
+                ) : (
+                  <span className="text-base font-medium text-slate-400">Drop word here</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        {error ? <p className="text-sm font-semibold text-rose-600">{error}</p> : null}
+      </section>
+
+      <section className="space-y-4">
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">Word bank</p>
+          <p className="text-xs text-slate-400">Drag a placed word back here to remove it.</p>
+        </div>
+        <div
+          className="flex min-h-[84px] flex-wrap gap-3 rounded-2xl border border-dashed border-slate-300 bg-slate-100/70 p-4"
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={handleDropToBank}
+        >
+          {availableWords.length === 0 ? (
+            <p className="text-base font-medium text-slate-400">All words are placed above.</p>
+          ) : (
+            availableWords.map((word) => (
+              <WordToken key={word.id} word={word} onDragStart={handleDragStartFromBank(word.id)} />
+            ))
+          )}
+        </div>
+      </section>
+
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <button
+          type="button"
+          onClick={handleSubmit}
+          className="inline-flex items-center justify-center rounded-xl bg-emerald-500 px-6 py-3 text-lg font-semibold text-white shadow-lg transition hover:bg-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-slate-400"
+          disabled={stepSolved}
+        >
+          Submit response
+        </button>
+        {stepSolved ? (
+          <button
+            type="button"
+            onClick={handleNextStep}
+            className="inline-flex items-center justify-center rounded-xl border border-emerald-400 px-6 py-3 text-lg font-semibold text-emerald-700 transition hover:bg-emerald-50"
+          >
+            {currentStepIndex === conversation.steps.length - 1
+              ? 'View conversation summary'
+              : 'Next sentence'}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+
+  const renderSummaryPhase = () => (
+    <div className="mx-auto w-full max-w-3xl rounded-3xl bg-white/90 p-10 text-center shadow-xl backdrop-blur-lg">
+      <h2 className="text-4xl font-black text-slate-900">Conversation complete</h2>
+      <p className="mt-4 text-lg text-slate-700">{conversation.outro}</p>
+
+      <div className="mt-8 grid grid-cols-1 gap-6 text-left sm:grid-cols-2">
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">Sentences cleared</p>
+          <p className="mt-2 text-3xl font-black text-slate-900">{stats.stepsCompleted}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">Words placed correctly</p>
+          <p className="mt-2 text-3xl font-black text-slate-900">{stats.wordsCorrect}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">Unique words learned</p>
+          <p className="mt-2 text-3xl font-black text-slate-900">{uniqueWordCount}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">Submission attempts</p>
+          <p className="mt-2 text-3xl font-black text-slate-900">{stats.attempts}</p>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => {
+          setPhase('profile');
+          setCurrentStepIndex(0);
+          setStats({ attempts: 0, stepsCompleted: 0, wordsCorrect: 0 });
+          uniqueWordsRef.current = new Set();
+          setUniqueWordCount(0);
+        }}
+        className="mt-10 inline-flex items-center justify-center rounded-xl bg-emerald-500 px-6 py-3 text-lg font-semibold text-white shadow-lg transition hover:bg-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-2"
+      >
+        Start a new run
+      </button>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-6 text-slate-900 sm:p-12">
+      <main className="mx-auto flex min-h-[80vh] max-w-6xl items-center justify-center">
+        {phase === 'profile' && renderProfilePhase()}
+        {phase === 'intro' && renderIntroPhase()}
+        {phase === 'play' && currentStep && renderPlayPhase()}
+        {phase === 'summary' && renderSummaryPhase()}
+      </main>
+    </div>
+  );
+}
