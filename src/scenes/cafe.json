@@ -7,8 +7,75 @@
     "greeting": {
       "id": "greeting",
       "npc": {
-        "speaker": "Barista",
+        "speaker": "הבריסטה",
         "text": "ברוך הבא לבית הקפה שלנו! מה תרצה להזמין היום?"
+      },
+      "playerChoices": [
+        {
+          "id": "order-cappuccino",
+          "text": "אני רוצה קפה הפוך, בבקשה.",
+          "nextNodeId": "drink-details",
+          "eval": "good",
+          "feedback": "מעולה! זו הדרך המדויקת לבקש קפה הפוך.",
+          "reward": 2,
+          "wordsLearned": ["קפה הפוך"]
+        },
+        {
+          "id": "order-coffee",
+          "text": "אפשר קפה, תודה.",
+          "nextNodeId": "drink-details",
+          "eval": "ok",
+          "feedback": "סבבה! אפשר לבקש גם יותר ספציפי אם תרצה.",
+          "reward": 1,
+          "wordsLearned": ["קפה"]
+        },
+        {
+          "id": "ask-restroom",
+          "text": "איפה השירותים?",
+          "nextNodeId": "greeting",
+          "eval": "wrong",
+          "feedback": "זה פחות קשור להזמנה. נסה לענות להזמנה."
+        }
+      ]
+    },
+    "drink-details": {
+      "id": "drink-details",
+      "npc": {
+        "speaker": "הבריסטה",
+        "text": "מצוין! תרצה סוכר או חלב מיוחד?"
+      },
+      "playerChoices": [
+        {
+          "id": "details-brown-sugar",
+          "text": "אפשר מעט סוכר חום.",
+          "nextNodeId": "closing",
+          "eval": "good",
+          "feedback": "בחירה מצוינת! כך תבקש סוכר חום.",
+          "reward": 2,
+          "wordsLearned": ["סוכר חום"]
+        },
+        {
+          "id": "details-no-sugar",
+          "text": "בלי סוכר, תודה.",
+          "nextNodeId": "closing",
+          "eval": "ok",
+          "feedback": "אין בעיה! זו תשובה ברורה ומנומסת.",
+          "reward": 1
+        },
+        {
+          "id": "details-small-talk",
+          "text": "איזה יום יפה היום!",
+          "nextNodeId": "drink-details",
+          "eval": "wrong",
+          "feedback": "נחמד, אבל הבריסטה עדיין מחכה לתשובה לגבי הקפה."
+        }
+      ]
+    },
+    "closing": {
+      "id": "closing",
+      "npc": {
+        "speaker": "הבריסטה",
+        "text": "הכל מוכן! שב בנחת ואני אביא את המשקה עוד רגע."
       },
       "playerChoices": []
     }
