@@ -355,7 +355,7 @@ export default function App() {
       <section className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-6 dark:border-slate-700 dark:bg-slate-900/70">
         <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">Hebrew Conversation</p>
         <div
-          className="flex flex-row-reverse flex-wrap justify-end gap-3 text-2xl font-bold text-slate-900"
+          className="flex flex-wrap justify-end gap-3 text-2xl font-bold text-slate-900"
           dir="rtl"
         >
           {currentStep.prompt.map((word) => (
