@@ -1,0 +1,16 @@
+{
+  "id": "cafe",
+  "name": "Café Meetup",
+  "description": "Practice ordering coffee in Hebrew.",
+  "startingNode": "greeting",
+  "nodes": {
+    "greeting": {
+      "id": "greeting",
+      "npc": {
+        "speaker": "Barista",
+        "text": "ברוך הבא לבית הקפה שלנו! מה תרצה להזמין היום?"
+      },
+      "playerChoices": []
+    }
+  }
+}
