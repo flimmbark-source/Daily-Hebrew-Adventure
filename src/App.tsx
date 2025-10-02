@@ -2,9 +2,40 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { FeedbackChip, ReviewTray } from './components';
 import { selectCurrentNode, useGameState } from './game/state';
-import type { PlayerChoice } from './scenes/types';
+import type { GenderPresentation, PlayerChoice, PlayerLevel } from './scenes/types';
 
 const CAFE_SCENE_ID = 'cafe';
+
+const GENDER_OPTIONS: { value: GenderPresentation; label: string; description: string }[] = [
+  {
+    value: 'masculine',
+    label: 'Masculine',
+    description: 'Use masculine verb endings in your replies.',
+  },
+  {
+    value: 'feminine',
+    label: 'Feminine',
+    description: 'Use feminine verb endings in your replies.',
+  },
+  {
+    value: 'neutral',
+    label: 'Neutral',
+    description: 'Prefer mixed or gender-neutral phrasing.',
+  },
+];
+
+const LEVEL_OPTIONS: { value: PlayerLevel; label: string; description: string }[] = [
+  {
+    value: 'beginner',
+    label: 'Beginner',
+    description: 'Show transliteration hints by default.',
+  },
+  {
+    value: 'advanced',
+    label: 'Advanced',
+    description: 'Hide hints unless a concept trips you up.',
+  },
+];
 
 type ChoiceFeedback = Record<
   string,
@@ -87,6 +118,8 @@ function App() {
   const currentNode = useGameState(selectCurrentNode);
   const goToNode = useGameState((state) => state.goToNode);
   const reset = useGameState((state) => state.reset);
+  const profile = useGameState((state) => state.profile);
+  const updateProfile = useGameState((state) => state.updateProfile);
 
   const hasStarted = Boolean(sceneId);
   const [feedbackByChoice, setFeedbackByChoice] = useState<ChoiceFeedback>({});
@@ -98,6 +131,68 @@ function App() {
   const [postMicroReviewChoice, setPostMicroReviewChoice] = useState<PlayerChoice | null>(null);
   const [vocabSchedule, setVocabSchedule] = useState<Record<string, VocabItemSchedule>>({});
   const [reviewRatings, setReviewRatings] = useState<Record<string, number>>({});
+  const [missedConcepts, setMissedConcepts] = useState<Record<string, boolean>>({});
+
+  const resolveChoiceForProfile = useCallback(
+    (choice: PlayerChoice): PlayerChoice => {
+      const variant =
+        choice.variants?.[profile.genderPresentation] ?? choice.variants?.neutral;
+
+      if (!variant) {
+        return choice;
+      }
+
+      return {
+        ...choice,
+        text: variant.text ?? choice.text,
+        transliteration: variant.transliteration ?? choice.transliteration,
+        eval: variant.eval ?? choice.eval,
+        feedback: variant.feedback ?? choice.feedback,
+      };
+    },
+    [profile.genderPresentation],
+  );
+
+  const handleGenderChange = useCallback(
+    (value: GenderPresentation) => {
+      if (value === profile.genderPresentation) {
+        return;
+      }
+
+      updateProfile({ genderPresentation: value });
+    },
+    [profile.genderPresentation, updateProfile],
+  );
+
+  const handleLevelChange = useCallback(
+    (value: PlayerLevel) => {
+      if (value === profile.level) {
+        return;
+      }
+
+      updateProfile({ level: value });
+    },
+    [profile.level, updateProfile],
+  );
+
+  const shouldShowTransliteration = useCallback(
+    (choice: PlayerChoice) => {
+      if (!choice.transliteration) {
+        return false;
+      }
+
+      if (profile.level === 'beginner') {
+        return true;
+      }
+
+      if (!choice.conceptId) {
+        return false;
+      }
+
+      return Boolean(missedConcepts[choice.conceptId]);
+    },
+    [missedConcepts, profile.level],
+  );
 
   const applySchedulingUpdates = useCallback(
     (updates: { itemId: string; label: string; quality: number }[]) => {
@@ -259,6 +354,13 @@ function App() {
         }));
       }
 
+      if (choice.conceptId && choice.eval === 'wrong') {
+        setMissedConcepts((prev) => ({
+          ...prev,
+          [choice.conceptId ?? '']: true,
+        }));
+      }
+
       if (choice.eval === 'good') {
         speak(choice.text);
       }
@@ -389,6 +491,7 @@ function App() {
     setActiveMicroReview(null);
     setPostMicroReviewChoice(null);
     setReviewRatings({});
+    setMissedConcepts({});
     startScene(CAFE_SCENE_ID);
   }, [startScene]);
 
@@ -401,6 +504,7 @@ function App() {
     setActiveMicroReview(null);
     setPostMicroReviewChoice(null);
     setReviewRatings({});
+    setMissedConcepts({});
     reset();
   }, [clearAdvanceTimeout, reset]);
 
@@ -482,6 +586,65 @@ function App() {
       </header>
 
       <main className="mt-12 w-full flex-1">
+        <section className="mb-8 rounded-2xl bg-white/80 p-6 shadow-lg">
+          <h2 className="text-lg font-semibold text-emerald-700">Player profile</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Tune the conversation so your responses and hints match your goals.
+          </p>
+          <div className="mt-5 grid gap-4 md:grid-cols-2">
+            <div className="space-y-3">
+              <h3 className="text-sm font-semibold uppercase tracking-wide text-emerald-500">
+                Gender presentation
+              </h3>
+              <div className="flex flex-col gap-3">
+                {GENDER_OPTIONS.map((option) => {
+                  const isActive = profile.genderPresentation === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => handleGenderChange(option.value)}
+                      aria-pressed={isActive}
+                      className={`rounded-xl border px-4 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 ${
+                        isActive
+                          ? 'border-emerald-500 bg-emerald-50 text-emerald-800 shadow'
+                          : 'border-slate-200 bg-white/70 text-slate-700 hover:border-emerald-300'
+                      }`}
+                    >
+                      <span className="font-semibold">{option.label}</span>
+                      <span className="mt-1 block text-sm text-slate-500">{option.description}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="space-y-3">
+              <h3 className="text-sm font-semibold uppercase tracking-wide text-emerald-500">Learning mode</h3>
+              <div className="flex flex-col gap-3">
+                {LEVEL_OPTIONS.map((option) => {
+                  const isActive = profile.level === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => handleLevelChange(option.value)}
+                      aria-pressed={isActive}
+                      className={`rounded-xl border px-4 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 ${
+                        isActive
+                          ? 'border-emerald-500 bg-emerald-50 text-emerald-800 shadow'
+                          : 'border-slate-200 bg-white/70 text-slate-700 hover:border-emerald-300'
+                      }`}
+                    >
+                      <span className="font-semibold">{option.label}</span>
+                      <span className="mt-1 block text-sm text-slate-500">{option.description}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </section>
+
         {!hasStarted && (
           <div className="flex flex-col items-center gap-6">
             <p className="text-center text-lg text-slate-600">
@@ -510,35 +673,42 @@ function App() {
                     </p>
                   </div>
 
-                  <ul className="flex flex-col gap-4">
-                    {activeMicroReview.choices.map((choice) => {
-                      const feedback = microReviewFeedback[choice.id];
-                      const awaitingConfidence = pendingConfidence?.choice.id === choice.id;
-                      return (
-                        <li key={choice.id} className="flex w-full flex-col items-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => handleChoiceClick(choice)}
-                            className="w-full rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-3 text-right text-lg font-semibold text-emerald-800 shadow-sm transition hover:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
-                            dir="rtl"
-                            lang="he"
-                            disabled={Boolean(pendingConfidence) && !awaitingConfidence}
-                          >
-                            {choice.text}
-                          </button>
-                          {feedback && (
-                            <FeedbackChip evaluation={feedback.evaluation} message={feedback.message} />
-                          )}
-                          {awaitingConfidence && (
-                            <div className="w-full text-left">
-                              <p className="mb-2 text-sm font-medium text-slate-600">How confident did you feel?</p>
-                              <ConfidenceButtons onSelect={handleConfidenceSelect} />
-                            </div>
-                          )}
-                        </li>
-                      );
-                    })}
-                  </ul>
+                    <ul className="flex flex-col gap-4">
+                      {activeMicroReview.choices.map((choice) => {
+                        const resolvedChoice = resolveChoiceForProfile(choice);
+                        const feedback = microReviewFeedback[resolvedChoice.id];
+                        const awaitingConfidence = pendingConfidence?.choice.id === resolvedChoice.id;
+                        const showTransliteration = shouldShowTransliteration(resolvedChoice);
+                        return (
+                          <li key={resolvedChoice.id} className="flex w-full flex-col items-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleChoiceClick(resolvedChoice)}
+                              className="w-full rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-3 text-right text-lg font-semibold text-emerald-800 shadow-sm transition hover:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+                              dir="rtl"
+                              lang="he"
+                              disabled={Boolean(pendingConfidence) && !awaitingConfidence}
+                            >
+                              {resolvedChoice.text}
+                            </button>
+                            {showTransliteration && resolvedChoice.transliteration && (
+                              <span className="self-end text-sm font-medium text-slate-500" dir="ltr" lang="en">
+                                {resolvedChoice.transliteration}
+                              </span>
+                            )}
+                            {feedback && (
+                              <FeedbackChip evaluation={feedback.evaluation} message={feedback.message} />
+                            )}
+                            {awaitingConfidence && (
+                              <div className="w-full text-left">
+                                <p className="mb-2 text-sm font-medium text-slate-600">How confident did you feel?</p>
+                                <ConfidenceButtons onSelect={handleConfidenceSelect} />
+                              </div>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
                 </>
               ) : (
                 currentNode && (
@@ -550,36 +720,43 @@ function App() {
                       </p>
                     </div>
 
-                    {currentNode.playerChoices.length > 0 ? (
-                      <ul className="flex flex-col gap-4">
-                        {currentNode.playerChoices.map((choice) => {
-                          const feedback = feedbackByChoice[choice.id];
-                          const awaitingConfidence = pendingConfidence?.choice.id === choice.id;
-                          return (
-                            <li key={choice.id} className="flex flex-col items-end gap-2">
-                              <button
-                                type="button"
-                                onClick={() => handleChoiceClick(choice)}
-                                className="w-full rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-3 text-right text-lg font-semibold text-emerald-800 shadow-sm transition hover:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
-                                dir="rtl"
-                                lang="he"
-                                disabled={Boolean(pendingConfidence) && !awaitingConfidence}
-                              >
-                                {choice.text}
-                              </button>
-                              {feedback && (
-                                <FeedbackChip evaluation={feedback.evaluation} message={feedback.message} />
-                              )}
-                              {awaitingConfidence && (
-                                <div className="w-full text-left">
-                                  <p className="mb-2 text-sm font-medium text-slate-600">How confident did you feel?</p>
-                                  <ConfidenceButtons onSelect={handleConfidenceSelect} />
-                                </div>
-                              )}
-                            </li>
-                          );
-                        })}
-                      </ul>
+                      {currentNode.playerChoices.length > 0 ? (
+                        <ul className="flex flex-col gap-4">
+                          {currentNode.playerChoices.map((choice) => {
+                            const resolvedChoice = resolveChoiceForProfile(choice);
+                            const feedback = feedbackByChoice[resolvedChoice.id];
+                            const awaitingConfidence = pendingConfidence?.choice.id === resolvedChoice.id;
+                            const showTransliteration = shouldShowTransliteration(resolvedChoice);
+                            return (
+                              <li key={resolvedChoice.id} className="flex flex-col items-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleChoiceClick(resolvedChoice)}
+                                  className="w-full rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-3 text-right text-lg font-semibold text-emerald-800 shadow-sm transition hover:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+                                  dir="rtl"
+                                  lang="he"
+                                  disabled={Boolean(pendingConfidence) && !awaitingConfidence}
+                                >
+                                  {resolvedChoice.text}
+                                </button>
+                                {showTransliteration && resolvedChoice.transliteration && (
+                                  <span className="self-end text-sm font-medium text-slate-500" dir="ltr" lang="en">
+                                    {resolvedChoice.transliteration}
+                                  </span>
+                                )}
+                                {feedback && (
+                                  <FeedbackChip evaluation={feedback.evaluation} message={feedback.message} />
+                                )}
+                                {awaitingConfidence && (
+                                  <div className="w-full text-left">
+                                    <p className="mb-2 text-sm font-medium text-slate-600">How confident did you feel?</p>
+                                    <ConfidenceButtons onSelect={handleConfidenceSelect} />
+                                  </div>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
                     ) : (
                       <div className="flex flex-col items-center gap-6 rounded-xl bg-emerald-50 p-6 text-center">
                         <p className="text-lg font-semibold text-emerald-700" dir="rtl" lang="he">

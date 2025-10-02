@@ -14,20 +14,34 @@
         {
           "id": "order-cappuccino",
           "text": "אני רוצה קפה הפוך, בבקשה.",
+          "transliteration": "ani rotze kafe hafuch, bevakasha.",
+          "conceptId": "cafe-order",
           "nextNodeId": "drink-details",
           "eval": "good",
           "feedback": "מעולה! זו הדרך המדויקת לבקש קפה הפוך.",
           "reward": 2,
-          "wordsLearned": ["קפה הפוך"]
+          "wordsLearned": ["קפה הפוך"],
+          "variants": {
+            "feminine": {
+              "transliteration": "ani rotzah kafe hafuch, bevakasha."
+            }
+          }
         },
         {
           "id": "order-coffee",
           "text": "אפשר קפה, תודה.",
+          "transliteration": "efshar kafe, toda.",
+          "conceptId": "cafe-order",
           "nextNodeId": "drink-details",
           "eval": "ok",
           "feedback": "סבבה! אפשר לבקש גם יותר ספציפי אם תרצה.",
           "reward": 1,
-          "wordsLearned": ["קפה"]
+          "wordsLearned": ["קפה"],
+          "variants": {
+            "feminine": {
+              "transliteration": "efshar kafe, toda."
+            }
+          }
         },
         {
           "id": "ask-restroom",
@@ -48,7 +62,9 @@
         {
           "id": "details-brown-sugar",
           "text": "אפשר מעט סוכר חום.",
-          "nextNodeId": "closing",
+          "transliteration": "efshar me'at sukar chum.",
+          "conceptId": "sweetener-choice",
+          "nextNodeId": "newcomer",
           "eval": "good",
           "feedback": "בחירה מצוינת! כך תבקש סוכר חום.",
           "reward": 2,
@@ -57,7 +73,9 @@
         {
           "id": "details-no-sugar",
           "text": "בלי סוכר, תודה.",
-          "nextNodeId": "closing",
+          "transliteration": "bli sukar, toda.",
+          "conceptId": "sweetener-choice",
+          "nextNodeId": "newcomer",
           "eval": "ok",
           "feedback": "אין בעיה! זו תשובה ברורה ומנומסת.",
           "reward": 1
@@ -68,6 +86,82 @@
           "nextNodeId": "drink-details",
           "eval": "wrong",
           "feedback": "נחמד, אבל הבריסטה עדיין מחכה לתשובה לגבי הקפה."
+        }
+      ]
+    },
+    "newcomer": {
+      "id": "newcomer",
+      "npc": {
+        "speaker": "הבריסטה",
+        "text": "נהדר. פעם ראשונה שלך כאן?"
+      },
+      "playerChoices": [
+        {
+          "id": "newcomer-masc",
+          "text": "אני חדש כאן.",
+          "transliteration": "ani chadash kan.",
+          "conceptId": "newcomer-status",
+          "nextNodeId": "closing",
+          "eval": "wrong",
+          "feedback": "הצורה הזאת מתאימה לדובר בלשון זכר.",
+          "reward": 2,
+          "wordsLearned": ["חדש"],
+          "variants": {
+            "masculine": {
+              "eval": "good",
+              "feedback": "בדיוק כך! זו צורת הזכר המתאימה."
+            },
+            "neutral": {
+              "eval": "ok",
+              "feedback": "זו צורת זכר; אפשר לבחור גם ניסוח ניטרלי."
+            }
+          }
+        },
+        {
+          "id": "newcomer-fem",
+          "text": "אני חדשה כאן.",
+          "transliteration": "ani chadasha kan.",
+          "conceptId": "newcomer-status",
+          "nextNodeId": "closing",
+          "eval": "wrong",
+          "feedback": "זו צורת נקבה — בחרי בה אם את מציגה בלשון נקבה.",
+          "reward": 2,
+          "wordsLearned": ["חדשה"],
+          "variants": {
+            "feminine": {
+              "eval": "good",
+              "feedback": "מעולה! זו הצורה המתאימה לנקבה."
+            },
+            "neutral": {
+              "eval": "ok",
+              "feedback": "זו צורת נקבה; אפשר גם ניסוח ניטרלי."
+            }
+          }
+        },
+        {
+          "id": "newcomer-neutral",
+          "text": "אני פה פעם ראשונה.",
+          "transliteration": "ani po pa'am rishona.",
+          "conceptId": "newcomer-status",
+          "nextNodeId": "closing",
+          "eval": "ok",
+          "feedback": "זה ניסוח ניטרלי שמתאים לכולם.",
+          "reward": 1,
+          "wordsLearned": ["פעם ראשונה"],
+          "variants": {
+            "neutral": {
+              "eval": "good",
+              "feedback": "בול! זה ניסוח ניטרלי שמתאים להעדפה שלך."
+            },
+            "masculine": {
+              "eval": "ok",
+              "feedback": "נכון, אך תוכל גם לומר \"אני חדש\" לצורת זכר."
+            },
+            "feminine": {
+              "eval": "ok",
+              "feedback": "נכון, אך תוכלי גם לומר \"אני חדשה\" לצורת נקבה."
+            }
+          }
         }
       ]
     },

@@ -1,6 +1,11 @@
 import { create } from 'zustand';
 
-import type { Scene, SceneNode } from '../scenes/types';
+import type {
+  GenderPresentation,
+  PlayerLevel,
+  Scene,
+  SceneNode,
+} from '../scenes/types';
 import cafeScene from '../scenes/cafe.json';
 
 const cafe = cafeScene as Scene;
@@ -9,15 +14,22 @@ const scenes: Record<string, Scene> = {
   [cafe.id]: cafe,
 };
 
+type PlayerProfile = {
+  genderPresentation: GenderPresentation;
+  level: PlayerLevel;
+};
+
 type GameState = {
   sceneId: string | null;
   nodeId: string | null;
   points: number;
   wordsLearned: string[];
   scenes: Record<string, Scene>;
+  profile: PlayerProfile;
   startScene: (sceneId: string) => void;
   goToNode: (nextNodeId: string, reward?: number, wordsLearned?: string[]) => void;
   reset: () => void;
+  updateProfile: (updates: Partial<PlayerProfile>) => void;
 };
 
 export const useGameState = create<GameState>((set) => ({
@@ -26,6 +38,10 @@ export const useGameState = create<GameState>((set) => ({
   points: 0,
   wordsLearned: [],
   scenes,
+  profile: {
+    genderPresentation: 'feminine',
+    level: 'beginner',
+  },
   startScene: (sceneId) => {
     const scene = scenes[sceneId];
     if (!scene) {
@@ -71,6 +87,10 @@ export const useGameState = create<GameState>((set) => ({
       points: 0,
       wordsLearned: [],
     }),
+  updateProfile: (updates) =>
+    set((state) => ({
+      profile: { ...state.profile, ...updates },
+    })),
 }));
 
 export const selectCurrentScene = (state: GameState): Scene | null => {
