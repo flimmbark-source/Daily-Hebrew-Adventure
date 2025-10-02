@@ -32,19 +32,26 @@ function WordToken({
   word,
   onDragStart,
   className = '',
+  showTranslationBelow = false,
 }: {
   word: ResponseWord;
   onDragStart: (event: DragEvent<HTMLDivElement>) => void;
   className?: string;
+  showTranslationBelow?: boolean;
 }) {
   return (
     <div
       draggable
       onDragStart={onDragStart}
-      className={`cursor-grab select-none rounded-xl border border-slate-300 bg-white px-3 py-2 text-lg font-semibold text-slate-900 shadow transition hover:border-emerald-400 hover:shadow-lg dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 ${className}`}
-      title={word.translation}
+      className={`cursor-grab select-none rounded-xl border border-slate-300 bg-white px-3 py-2 text-lg font-semibold text-slate-900 shadow transition hover:border-emerald-400 hover:shadow-lg dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 ${
+        showTranslationBelow ? 'flex flex-col items-center gap-1 text-center' : ''
+      } ${className}`}
+      {...(!showTranslationBelow ? { title: word.translation } : {})}
     >
-      {word.text}
+      <span>{word.text}</span>
+      {showTranslationBelow ? (
+        <span className="text-sm font-medium text-slate-500 dark:text-slate-300">{word.translation}</span>
+      ) : null}
     </div>
   );
 }
@@ -346,12 +353,15 @@ export default function App() {
       </div>
 
       <section className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-6 dark:border-slate-700 dark:bg-slate-900/70">
-        <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">Hebrew prompt</p>
-        <div className="flex flex-wrap gap-3 text-2xl font-bold text-slate-900">
+        <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">Hebrew Conversation</p>
+        <div
+          className="flex flex-row-reverse flex-wrap justify-end gap-3 text-2xl font-bold text-slate-900"
+          dir="rtl"
+        >
           {currentStep.prompt.map((word) => (
             <span
               key={word.id}
-              className="rounded-lg bg-white px-4 py-2 shadow-sm dark:bg-slate-800"
+              className="rounded-lg bg-transparent px-4 py-2 text-right"
               title={word.translation}
             >
               {word.text}
@@ -416,7 +426,12 @@ export default function App() {
             <p className="text-base font-medium text-slate-400">All words are placed above.</p>
           ) : (
             availableWords.map((word) => (
-              <WordToken key={word.id} word={word} onDragStart={handleDragStartFromBank(word.id)} />
+              <WordToken
+                key={word.id}
+                word={word}
+                onDragStart={handleDragStartFromBank(word.id)}
+                showTranslationBelow={profile.level === 'beginner'}
+              />
             ))
           )}
         </div>
