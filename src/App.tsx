@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { FeedbackChip } from './components';
+import { FeedbackChip, ReviewTray } from './components';
 import { selectCurrentNode, useGameState } from './game/state';
 import type { PlayerChoice } from './scenes/types';
 
@@ -30,23 +30,30 @@ type MicroReviewData = {
   choices: PlayerChoice[];
 };
 
-type Attempt = {
+type VocabItemSchedule = {
   itemId: string;
-  itemLabel: string;
-  evaluation: PlayerChoice['eval'];
-  confidence: ConfidenceLevel;
-  quality: number;
-  timestamp: number;
-  sourceNodeId: string;
-  isMicroReview: boolean;
+  label: string;
+  ease: number;
+  interval: number;
+  repetitions: number;
+  nextDue: number;
+  lastReviewed: number | null;
+  reviewCount: number;
+  totalQuality: number;
 };
 
-type WeakItem = {
+type ReviewCandidate = {
   itemId: string;
-  itemLabel: string;
-  averageQuality: number;
-  attempts: number;
+  label: string;
+  ease: number;
+  nextDue: number;
+  isDue: boolean;
+  averageQuality: number | null;
+  rating?: number;
 };
+
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const SM2_MIN_EASE = 1.3;
 
 const ConfidenceButtons = ({ onSelect }: { onSelect: (level: ConfidenceLevel) => void }) => (
   <div className="flex w-full justify-between gap-2">
@@ -89,7 +96,73 @@ function App() {
   const [pendingMicroReview, setPendingMicroReview] = useState<MicroReviewData | null>(null);
   const [activeMicroReview, setActiveMicroReview] = useState<MicroReviewData | null>(null);
   const [postMicroReviewChoice, setPostMicroReviewChoice] = useState<PlayerChoice | null>(null);
-  const [attempts, setAttempts] = useState<Attempt[]>([]);
+  const [vocabSchedule, setVocabSchedule] = useState<Record<string, VocabItemSchedule>>({});
+  const [reviewRatings, setReviewRatings] = useState<Record<string, number>>({});
+
+  const applySchedulingUpdates = useCallback(
+    (updates: { itemId: string; label: string; quality: number }[]) => {
+      if (updates.length === 0) {
+        return;
+      }
+
+      const timestamp = Date.now();
+
+      setVocabSchedule((previous) => {
+        const next = { ...previous };
+
+        for (const update of updates) {
+          const quality = Math.max(0, Math.min(5, update.quality));
+          const existing = next[update.itemId] ?? {
+            itemId: update.itemId,
+            label: update.label,
+            ease: 2.5,
+            interval: 0,
+            repetitions: 0,
+            nextDue: timestamp,
+            lastReviewed: null,
+            reviewCount: 0,
+            totalQuality: 0,
+          };
+
+          let ease = existing.ease - 0.8 + 0.28 * quality - 0.02 * quality * quality;
+          ease = Number.isFinite(ease) ? Math.max(SM2_MIN_EASE, ease) : existing.ease;
+
+          let repetitions = existing.repetitions;
+          let interval = existing.interval;
+
+          if (quality < 3) {
+            repetitions = 0;
+            interval = 1;
+          } else {
+            repetitions += 1;
+
+            if (repetitions === 1) {
+              interval = 1;
+            } else if (repetitions === 2) {
+              interval = 6;
+            } else {
+              interval = Math.max(1, Math.round(existing.interval * ease));
+            }
+          }
+
+          next[update.itemId] = {
+            ...existing,
+            label: update.label ?? existing.label,
+            ease,
+            repetitions,
+            interval,
+            nextDue: timestamp + interval * DAY_IN_MS,
+            lastReviewed: timestamp,
+            reviewCount: existing.reviewCount + 1,
+            totalQuality: existing.totalQuality + quality,
+          };
+        }
+
+        return next;
+      });
+    },
+    [],
+  );
 
   const clearAdvanceTimeout = useCallback(() => {
     if (typeof window === 'undefined') {
@@ -244,19 +317,25 @@ function App() {
       setPendingConfidence(null);
 
       const quality = computeQuality(choice.eval, level);
-      setAttempts((prev) => [
-        ...prev,
-        {
-          itemId: choice.id,
-          itemLabel: choice.text,
-          evaluation: choice.eval,
-          confidence: level,
+
+      const isCorrect = choice.eval === 'good' || choice.eval === 'ok';
+      if (isCorrect && choice.wordsLearned && choice.wordsLearned.length > 0) {
+        const schedulingUpdates = choice.wordsLearned.map((word) => ({
+          itemId: word,
+          label: word,
           quality,
-          timestamp: Date.now(),
-          sourceNodeId: contextNodeId,
-          isMicroReview,
-        },
-      ]);
+        }));
+
+        applySchedulingUpdates(schedulingUpdates);
+
+        setReviewRatings((prev) => {
+          const next = { ...prev };
+          for (const word of choice.wordsLearned ?? []) {
+            delete next[word];
+          }
+          return next;
+        });
+      }
 
       if (isMicroReview) {
         if (!activeMicroReview) {
@@ -290,63 +369,106 @@ function App() {
 
       scheduleAdvance(choice);
     },
-    [activeMicroReview, computeQuality, maybeScheduleMicroReview, pendingConfidence, pendingMicroReview, postMicroReviewChoice, scheduleAdvance],
+    [
+      activeMicroReview,
+      applySchedulingUpdates,
+      computeQuality,
+      maybeScheduleMicroReview,
+      pendingConfidence,
+      pendingMicroReview,
+      postMicroReviewChoice,
+      scheduleAdvance,
+    ],
   );
 
   const handleStartScene = useCallback(() => {
-    setAttempts([]);
     setFeedbackByChoice({});
     setMicroReviewFeedback({});
     setPendingConfidence(null);
     setPendingMicroReview(null);
     setActiveMicroReview(null);
     setPostMicroReviewChoice(null);
+    setReviewRatings({});
     startScene(CAFE_SCENE_ID);
   }, [startScene]);
 
   const handleReset = useCallback(() => {
     clearAdvanceTimeout();
-    setAttempts([]);
     setFeedbackByChoice({});
     setMicroReviewFeedback({});
     setPendingConfidence(null);
     setPendingMicroReview(null);
     setActiveMicroReview(null);
     setPostMicroReviewChoice(null);
+    setReviewRatings({});
     reset();
   }, [clearAdvanceTimeout, reset]);
 
-  const weakestItems: WeakItem[] = useMemo(() => {
-    if (attempts.length === 0) {
+  const reviewTrayItems: ReviewCandidate[] = useMemo(() => {
+    const entries = Object.values(vocabSchedule);
+    if (entries.length === 0) {
       return [];
     }
 
-    const aggregated = new Map<string, { totalQuality: number; attempts: number; itemLabel: string }>();
+    const now = Date.now();
 
-    for (const attempt of attempts) {
-      const existing = aggregated.get(attempt.itemId) ?? {
-        totalQuality: 0,
-        attempts: 0,
-        itemLabel: attempt.itemLabel,
-      };
+    const sorted = [...entries].sort((a, b) => {
+      const aDue = a.nextDue <= now;
+      const bDue = b.nextDue <= now;
 
-      existing.totalQuality += attempt.quality;
-      existing.attempts += 1;
-      existing.itemLabel = attempt.itemLabel;
+      if (aDue && !bDue) {
+        return -1;
+      }
 
-      aggregated.set(attempt.itemId, existing);
-    }
+      if (!aDue && bDue) {
+        return 1;
+      }
 
-    return Array.from(aggregated.entries())
-      .map(([itemId, value]) => ({
-        itemId,
-        itemLabel: value.itemLabel,
-        averageQuality: value.totalQuality / value.attempts,
-        attempts: value.attempts,
-      }))
-      .sort((a, b) => a.averageQuality - b.averageQuality)
-      .slice(0, 3);
-  }, [attempts]);
+      if (aDue && bDue) {
+        return a.nextDue - b.nextDue;
+      }
+
+      const aAverage = a.reviewCount > 0 ? a.totalQuality / a.reviewCount : Number.POSITIVE_INFINITY;
+      const bAverage = b.reviewCount > 0 ? b.totalQuality / b.reviewCount : Number.POSITIVE_INFINITY;
+
+      if (aAverage !== bAverage) {
+        return aAverage - bAverage;
+      }
+
+      if (a.ease !== b.ease) {
+        return a.ease - b.ease;
+      }
+
+      return a.nextDue - b.nextDue;
+    });
+
+    return sorted.slice(0, 3).map((item) => ({
+      itemId: item.itemId,
+      label: item.label,
+      ease: item.ease,
+      nextDue: item.nextDue,
+      isDue: item.nextDue <= now,
+      averageQuality: item.reviewCount > 0 ? item.totalQuality / item.reviewCount : null,
+      rating: reviewRatings[item.itemId],
+    }));
+  }, [reviewRatings, vocabSchedule]);
+
+  const handleReviewRate = useCallback(
+    (itemId: string, quality: number) => {
+      const scheduleEntry = vocabSchedule[itemId];
+      if (!scheduleEntry) {
+        return;
+      }
+
+      applySchedulingUpdates([{ itemId, label: scheduleEntry.label, quality }]);
+
+      setReviewRatings((prev) => ({
+        ...prev,
+        [itemId]: Math.max(0, Math.min(5, quality)),
+      }));
+    },
+    [applySchedulingUpdates, vocabSchedule],
+  );
 
   return (
     <div className="mx-auto flex min-h-screen max-w-2xl flex-col items-center bg-gradient-to-b from-emerald-50 via-white to-emerald-100 px-6 py-16 text-slate-900">
@@ -464,22 +586,11 @@ function App() {
                           כל הכבוד! סיימת את השיחה.
                         </p>
                         <div className="w-full rounded-xl bg-white/70 p-4 text-left">
-                          <h3 className="text-base font-semibold text-emerald-700">Focus on these next</h3>
-                          {weakestItems.length > 0 ? (
-                            <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm text-slate-700">
-                              {weakestItems.map((item) => (
-                                <li key={item.itemId}>
-                                  <div className="flex items-center justify-between gap-4">
-                                    <span dir="rtl" lang="he">{item.itemLabel}</span>
-                                    <span className="text-xs font-semibold text-slate-500">
-                                      {item.averageQuality.toFixed(1)} / 5 · {item.attempts} try{item.attempts === 1 ? '' : 's'}
-                                    </span>
-                                  </div>
-                                </li>
-                              ))}
-                            </ol>
+                          <h3 className="text-base font-semibold text-emerald-700">Review tray</h3>
+                          {reviewTrayItems.length > 0 ? (
+                            <ReviewTray items={reviewTrayItems} onRate={handleReviewRate} />
                           ) : (
-                            <p className="mt-3 text-sm text-slate-600">No weaknesses detected yet—great job!</p>
+                            <p className="mt-3 text-sm text-slate-600">No review items yet—keep exploring!</p>
                           )}
                         </div>
                         <button
